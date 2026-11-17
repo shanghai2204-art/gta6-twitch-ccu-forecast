@@ -8,8 +8,11 @@ curves ship inside every case. For each forecast hour we take the weighted
 empirical quantiles of the comparables' log-ratios log(viewers_h / viewers_1),
 where a comparable's weight falls off with the distance between its hour-1
 audience and this case's hour-1 audience (scale bandwidth 1.0 in log units)
-and with the distance between release years (bandwidth 3 years). Big launches
-bend like big launches; the weighting lets the closest peers dominate.
+and with the distance between release years (bandwidth 3 years), and is
+multiplied by 3 when the comparable unlocked the same way this case did
+(a rolling midnight-local unlock bends a day differently from a single
+global unlock time). Big launches bend like big launches; the weighting
+lets the closest peers dominate.
 
 Validated offline by leave-one-out over the 37 usable comparables in the
 practice kit: mean pinball loss on the log scale 0.21, against 0.46 for the
@@ -40,7 +43,31 @@ Z = [-1.645, -0.674, 0.0, 0.674, 1.645]
 SIGMA = 0.15
 SCALE_BANDWIDTH = 1.0  # in natural-log units of the hour-1 audience
 YEAR_BANDWIDTH = 3.0  # in years between release dates
+UNLOCK_MATCH = 3.0  # weight multiplier when a comparable unlocked the same way
 MIN_DAY_HOURS = 18  # a comparable needs at least this many release-day hours
+
+
+def unlock_class(text):
+    """Classify an unlock description: a rolling midnight-local unlock bends
+    a launch day very differently from a single global unlock time."""
+    t = (text or "").lower()
+    if "rolling" in t or "midnight local" in t or "12 am local" in t:
+        return "rolling"
+    if "single" in t and ("global" in t or "simultaneous" in t):
+        return "global"
+    if "simultaneous" in t or "global unlock" in t:
+        return "global"
+    return "other"
+
+
+def case_unlock_class(case):
+    """The case's own unlock pattern, read from its notes; None if unclear."""
+    notes = (case.get("notes") or "").lower()
+    if "rolling" in notes or "midnight local" in notes or "12 am local" in notes:
+        return "rolling"
+    if "simultaneous" in notes or "global unlock" in notes:
+        return "global"
+    return None
 
 
 def parse_ts(text):
@@ -114,6 +141,7 @@ def forecast_case(case):
     target_year = parse_ts(case["day_start"]).year
 
     # Training curves from the comparables that ship inside the case.
+    target_unlock = case_unlock_class(case)
     train = []
     for comp in case.get("comparables") or []:
         curve = day_curve(comp)
@@ -125,6 +153,8 @@ def forecast_case(case):
             continue
         weight = math.exp(-abs(math.log(curve[1]) - log_p1) / SCALE_BANDWIDTH)
         weight *= math.exp(-abs(year - target_year) / YEAR_BANDWIDTH)
+        if target_unlock is not None and unlock_class(comp.get("unlock")) == target_unlock:
+            weight *= UNLOCK_MATCH
         train.append((curve, weight))
 
     # Raw log-quantiles per forecast hour, before smoothing.

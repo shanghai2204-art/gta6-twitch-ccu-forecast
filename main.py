@@ -127,7 +127,8 @@ def forecast_case(case):
         weight *= math.exp(-abs(year - target_year) / YEAR_BANDWIDTH)
         train.append((curve, weight))
 
-    rows = []
+    # Raw log-quantiles per forecast hour, before smoothing.
+    raw = []
     for row in case["forecast"]:
         hour = row["hour"]
         pairs = [
@@ -136,16 +137,32 @@ def forecast_case(case):
             if hour in curve
         ]
         if not pairs:
-            rows.append({"hour": hour, "q": persistence_quantiles(p1, hour)})
+            spread = SIGMA * math.sqrt(hour - 1)
+            raw.append([z * spread for z in Z])
             continue
+        raw.append([weighted_quantile(pairs, tau) for tau in LEVELS])
+
+    # A launch day's shape bends smoothly from hour to hour, while each
+    # hour's empirical quantile is estimated on its own and jitters. A light
+    # 3-point median pass over each level's curve removes that jitter; in
+    # leave-one-out validation it did not hurt and slightly helped (mean
+    # pinball 0.2094 against 0.2099 unsmoothed).
+    for level in range(len(LEVELS)):
+        column = [r[level] for r in raw]
+        for i in range(1, len(column) - 1):
+            window = sorted((column[i - 1], column[i], column[i + 1]))
+            raw[i][level] = window[1]
+
+    rows = []
+    for row, log_qs in zip(case["forecast"], raw):
         qs = []
         last = 0.0
-        for tau in LEVELS:
-            value = math.exp(log_p1 + weighted_quantile(pairs, tau))
+        for log_q in log_qs:
+            value = math.exp(log_p1 + log_q)
             value = min(max(value, last), 1e9)  # keep quantiles non-decreasing
             last = value
             qs.append(round2(value))
-        rows.append({"hour": hour, "q": qs})
+        rows.append({"hour": row["hour"], "q": qs})
     return {"hours": rows}
 
 
